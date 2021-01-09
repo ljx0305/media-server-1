@@ -82,8 +82,9 @@ static int rtmp_client_send(void* param, const void* header, size_t len, const v
 static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
 {
 	int r, type;
-    int avcrecord = 0;
+	int avcrecord = 0;
     int aacconfig = 0;
+	size_t taglen;
 	uint32_t timestamp;
 	uint32_t s_timestamp = 0;
 	uint32_t diff = 0;
@@ -95,11 +96,13 @@ static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
 		void* f = flv_reader_create(flv);
 
 		clock = system_clock(); // timestamp start from 0
-		while ((r = flv_reader_read(f, &type, &timestamp, packet, sizeof(packet))) > 0)
+		while (1 == flv_reader_read(f, &type, &timestamp, &taglen, packet, sizeof(packet)))
 		{
 			uint64_t t = system_clock();
-			if (clock + timestamp > t)
+			if (clock + timestamp > t && clock + timestamp < t + 3 * 1000) // dts skip
 				system_sleep(clock + timestamp - t);
+			else if (clock + timestamp > t + 3 * 1000)
+				clock = t - timestamp;
 			
 			timestamp += diff;
 			s_timestamp = timestamp > s_timestamp ? timestamp : s_timestamp;
@@ -112,7 +115,7 @@ static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
                         continue;
                     aacconfig = 1;
                 }
-				r = rtmp_client_push_audio(rtmp, packet, r, timestamp);
+				r = rtmp_client_push_audio(rtmp, packet, taglen, timestamp);
 			}
 			else if (FLV_TYPE_VIDEO == type)
 			{
@@ -122,12 +125,24 @@ static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
                         continue;
                     avcrecord = 1;
                 }
-				printf("timestamp: %u, s_timestamp: %u\n", timestamp, s_timestamp);
-				r = rtmp_client_push_video(rtmp, packet, r, timestamp);
+				//bool keyframe = 1 == ((packet[0] & 0xF0) >> 4);
+				//printf("timestamp: %u, s_timestamp: %u%s\n", timestamp, s_timestamp, keyframe ? " [I]" : "");
+				//if (timestamp > 10 * 1000 && keyframe)
+				//{
+				//	uint8_t header[5];
+				//	header[0] = (1 << 4) /* FrameType */ | 7 /* AVC */;
+				//	header[1] = 2; // AVC end of sequence
+				//	header[2] = 0;
+				//	header[3] = 0;
+				//	header[4] = 0;
+				//	r = rtmp_client_push_video(rtmp, header, 5, timestamp);
+				//	system_sleep(600 * 1000);
+				//}
+				r = rtmp_client_push_video(rtmp, packet, taglen, timestamp);
 			}
 			else if (FLV_TYPE_SCRIPT == type)
 			{
-				r = rtmp_client_push_script(rtmp, packet, r, timestamp);
+				r = rtmp_client_push_script(rtmp, packet, taglen, timestamp);
 			}
 			else
 			{
@@ -146,6 +161,9 @@ static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
 
 		diff = s_timestamp + 30;
 	}
+
+EXIT:
+	return;
 }
 
 // rtmp://video-center.alivecdn.com/live/hello?vhost=your.domain
@@ -168,7 +186,7 @@ void rtmp_publish_test(const char* host, const char* app, const char* stream, co
 
 	while (4 != rtmp_client_getstate(rtmp) && (r = socket_recv(socket, packet, sizeof(packet), 0)) > 0)
 	{
-		r = rtmp_client_input(rtmp, packet, r);
+		assert(0 == rtmp_client_input(rtmp, packet, r));
 	}
 
 	rtmp_client_push(flv, rtmp);

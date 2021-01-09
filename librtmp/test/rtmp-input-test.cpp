@@ -40,9 +40,9 @@ void rtmp_input_test(const char* file)
 
 	int n = 0;
 	FILE* fp = fopen(file, "rb");
-	while (fp && 4 == fread(&n, 1, 4, fp) && n == fread(packet, 1, n, fp))
+	while (fp && (n = fread(packet, 1, sizeof(packet), fp)) > 0)
 	{
-		r = rtmp_client_input(rtmp, packet, n);
+		assert(0 == rtmp_client_input(rtmp, packet, n));
 	}
 	fclose(fp);
 

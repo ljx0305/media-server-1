@@ -2,7 +2,7 @@
 /// 4.2.11 Registration of MIME media type video/MP2P (p40)
 /// 
 /// RFC2250 2. Encapsulation of MPEG System and Transport Streams (p3)
-/// 1. Each RTP packet will contain a timestamp derived from the sender¡¯s 90KHz clock reference
+/// 1. Each RTP packet will contain a timestamp derived from the sender's 90KHz clock reference
 /// 2. For MPEG2 Program streams and MPEG1 system streams there are no packetization restrictions; 
 ///    these streams are treated as a packetized stream of bytes.
 ///
@@ -41,7 +41,11 @@ static void* rtp_ts_pack_create(int size, uint8_t pt, uint16_t seq, uint32_t ssr
 		size -= RTP_FIXED_HEADER;
 		size = size / TS_PACKET_SIZE * TS_PACKET_SIZE;
 		size += RTP_FIXED_HEADER;
-		if (size < 64) return NULL;
+		if (size < 64)
+		{
+			free(packer);
+			return NULL;
+		}
 	}
 
 	memcpy(&packer->handler, handler, sizeof(packer->handler));
@@ -75,14 +79,15 @@ static void rtp_ts_pack_get_info(void* pack, uint16_t* seq, uint32_t* timestamp)
 
 static int rtp_ts_pack_input(void* pack, const void* data, int bytes, uint32_t timestamp)
 {
-	int n;
+	int r, n;
 	uint8_t *rtp;
 	const uint8_t *ptr;
 	struct rtp_encode_ts_t *packer;
 	packer = (struct rtp_encode_ts_t *)pack;
 	packer->pkt.rtp.timestamp = timestamp; //(uint32_t)(time * KHz); // ms -> 90KHZ (RFC2250 section2 p2)
 
-	for (ptr = (const uint8_t *)data; bytes > 0; ++packer->pkt.rtp.seq)
+	r = 0;
+	for (ptr = (const uint8_t *)data; 0 == r && bytes > 0; ++packer->pkt.rtp.seq)
 	{
 		packer->pkt.payload = ptr;
 		packer->pkt.payloadlen = (bytes + RTP_FIXED_HEADER) <= packer->size ? bytes : (packer->size - RTP_FIXED_HEADER);
@@ -103,11 +108,11 @@ static int rtp_ts_pack_input(void* pack, const void* data, int bytes, uint32_t t
 			return -1;
 		}
 
-		packer->handler.packet(packer->cbparam, rtp, n, packer->pkt.rtp.timestamp, 0);
+		r = packer->handler.packet(packer->cbparam, rtp, n, packer->pkt.rtp.timestamp, 0);
 		packer->handler.free(packer->cbparam, rtp);
 	}
 
-	return 0;
+	return r;
 }
 
 struct rtp_payload_encode_t *rtp_ts_encode()

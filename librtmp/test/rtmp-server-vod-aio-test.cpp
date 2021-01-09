@@ -24,6 +24,7 @@ struct rtmp_server_vod_t
 static int STDCALL aio_rtmp_server_worker(void* param)
 {
 	int r, type;
+    size_t taglen;
     uint32_t timestamp;
     uint32_t s_timestamp = 0;
     uint32_t diff = 0;
@@ -36,12 +37,14 @@ static int STDCALL aio_rtmp_server_worker(void* param)
         void* f = flv_reader_create(s_file);
 
         clock = system_clock(); // timestamp start from 0
-        while ((r = flv_reader_read(f, &type, &timestamp, vod->packet, sizeof(vod->packet))) > 0)
+        while (1 == flv_reader_read(f, &type, &timestamp, &taglen, vod->packet, sizeof(vod->packet)))
         {
-            assert(r < sizeof(vod->packet));
+            assert(taglen < sizeof(vod->packet));
             uint64_t t = system_clock();
-            if (clock + timestamp > t)
+            if (clock + timestamp > t && clock + timestamp < t + 3 * 1000)
                 system_sleep(clock + timestamp - t);
+			else if (clock + timestamp > t + 3 * 1000)
+				clock = t - timestamp;
 
             timestamp += diff;
             s_timestamp = timestamp > s_timestamp ? timestamp : s_timestamp;
@@ -59,15 +62,15 @@ static int STDCALL aio_rtmp_server_worker(void* param)
 
             if (FLV_TYPE_AUDIO == type)
             {
-                r = aio_rtmp_server_send_audio(vod->session, vod->packet, r, timestamp);
+                r = aio_rtmp_server_send_audio(vod->session, vod->packet, taglen, timestamp);
             }
             else if (FLV_TYPE_VIDEO == type)
             {
-                r = aio_rtmp_server_send_video(vod->session, vod->packet, r, timestamp);
+                r = aio_rtmp_server_send_video(vod->session, vod->packet, taglen, timestamp);
             }
             else if (FLV_TYPE_SCRIPT == type)
             {
-                r = aio_rtmp_server_send_script(vod->session, vod->packet, r, timestamp);
+                r = aio_rtmp_server_send_script(vod->session, vod->packet, taglen, timestamp);
             }
             else
             {
@@ -118,6 +121,12 @@ static int aio_rtmp_server_onseek(aio_rtmp_userptr_t /*ptr*/, uint32_t ms)
 	return 0;
 }
 
+static int aio_rtmp_server_ongetduration(void* param, const char* app, const char* stream, double* duration)
+{
+	*duration = 30 * 60;
+	return 0;
+}
+
 static void aio_rtmp_server_onsend(aio_rtmp_userptr_t /*ptr*/, size_t /*bytes*/)
 {
 }
@@ -146,6 +155,7 @@ void rtmp_server_vod_aio_test(const char* flv)
 	handler.onpause = aio_rtmp_server_onpause;
 	handler.onseek = aio_rtmp_server_onseek;
 	handler.onclose = aio_rtmp_server_onclose;
+	handler.ongetduration = aio_rtmp_server_ongetduration;
 
 	aio_worker_init(8);
 

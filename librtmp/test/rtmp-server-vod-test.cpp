@@ -14,29 +14,32 @@ static const char* s_file;
 static int STDCALL rtmp_server_worker(void* param)
 {
 	int r, type;
+	size_t taglen;
 	uint32_t timestamp;
 	static uint64_t clock0 = system_clock() - 200; // send more data, open fast
 	void* f = flv_reader_create(s_file);
 
 	static unsigned char packet[8 * 1024 * 1024];
-	while ((r = flv_reader_read(f, &type, &timestamp, packet, sizeof(packet))) > 0)
+	while (1 == flv_reader_read(f, &type, &timestamp, &taglen, packet, sizeof(packet)))
 	{
-		assert(r < sizeof(packet));
-		uint64_t clock = system_clock();
-		if (clock0 + timestamp > clock)
-			system_sleep(clock0 + timestamp - clock);
+		assert(taglen < sizeof(packet));
+		uint64_t t = system_clock();
+		if (clock0 + timestamp > t && clock0 + timestamp < t + 3 * 1000)
+			system_sleep(clock0 + timestamp - t);
+		else if (clock0 + timestamp > t + 3 * 1000)
+			clock0 = t - timestamp;
 
 		if (FLV_TYPE_AUDIO == type)
 		{
-			r = rtmp_server_send_audio(s_rtmp, packet, r, timestamp);
+			r = rtmp_server_send_audio(s_rtmp, packet, taglen, timestamp);
 		}
 		else if (FLV_TYPE_VIDEO == type)
 		{
-			r = rtmp_server_send_video(s_rtmp, packet, r, timestamp);
+			r = rtmp_server_send_video(s_rtmp, packet, taglen, timestamp);
 		}
 		else if (FLV_TYPE_SCRIPT == type)
 		{
-			r = rtmp_server_send_script(s_rtmp, packet, r, timestamp);
+			r = rtmp_server_send_script(s_rtmp, packet, taglen, timestamp);
 		}
 		else
 		{
@@ -84,6 +87,12 @@ static int rtmp_server_onseek(void* param, uint32_t ms)
 	return 0;
 }
 
+static int rtmp_server_ongetduration(void* param, const char* app, const char* stream, double* duration)
+{
+	*duration = 30 * 60;
+	return 0;
+}
+
 void rtmp_server_vod_test(const char* flv)
 {
 	int r;
@@ -98,6 +107,7 @@ void rtmp_server_vod_test(const char* flv)
 	//handler.onpublish = rtmp_server_onpublish;
 	//handler.onvideo = rtmp_server_onvideo;
 	//handler.onaudio = rtmp_server_onaudio;
+	handler.ongetduration = rtmp_server_ongetduration;
 
 	socket_init();
 
@@ -112,7 +122,7 @@ void rtmp_server_vod_test(const char* flv)
 	static unsigned char packet[2 * 1024 * 1024];
 	while ((r = socket_recv(c, packet, sizeof(packet), 0)) > 0)
 	{
-		r = rtmp_server_input(s_rtmp, packet, r);
+		assert(0 == rtmp_server_input(s_rtmp, packet, r));
 	}
 	
 	rtmp_server_destroy(s_rtmp);

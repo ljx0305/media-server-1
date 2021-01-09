@@ -5,7 +5,7 @@
 
 // ISO/IEC 13818-1:2015 (E)
 // 2.4.3.7 Semantic definition of fields in PES packet
-// Table 2-22 ¨C Stream_id assignments(p54)
+// Table 2-22 - Stream_id assignments(p54)
 // In transport streams, the stream_id may be set to any valid value which correctly describes the elementary stream type as defined in Table 2-22. 
 // In transport streams, the elementary stream type is specified in the program-specific information as specified in 2.4.4
 enum EPES_STREAM_ID
@@ -55,10 +55,13 @@ struct packet_t
     uint8_t *data;
     size_t size;
     size_t capacity;
+
+	int vcl; // h.264/h.265 only
 };
 
 struct pes_t
 {
+    uint16_t pn;        // TS program number(0-ps)
 	uint16_t pid;		// PES PID : 13
 	uint8_t sid;		// PES stream_id : 8
 	uint8_t codecid;	// PMT/PSM stream_type : 8
@@ -115,8 +118,9 @@ struct pes_t
 
 size_t pes_read_header(struct pes_t *pes, const uint8_t* data, size_t bytes);
 size_t pes_write_header(const struct pes_t *pes, uint8_t* data, size_t bytes);
+size_t pes_read_mpeg1_header(struct pes_t *pes, const uint8_t* data, size_t bytes);
 
-typedef void (*pes_packet_handler)(void* param, int stream, int codecid, int flags, int64_t pts, int64_t dts, const void* data, size_t bytes);
-int pes_packet(struct packet_t* pkt, const struct pes_t* pes, const void* data, size_t size, pes_packet_handler handler, void* param);
+typedef int (*pes_packet_handler)(void* param, int program, int stream, int codecid, int flags, int64_t pts, int64_t dts, const void* data, size_t bytes);
+int pes_packet(struct packet_t* pkt, const struct pes_t* pes, const void* data, size_t size, int start, pes_packet_handler handler, void* param);
 
 #endif /* !_mpeg_pes_dec_h_ */

@@ -4,9 +4,7 @@
 #include "rtp-payload.h"
 #include <assert.h>
 
-#define MAX_UDP_PACKET (1450-16)
-
-extern "C" int rtp_ssrc(void);
+extern "C" uint32_t rtp_ssrc(void);
 
 PSFileSource::PSFileSource(const char *file)
 :m_reader(file)
@@ -17,7 +15,7 @@ PSFileSource::PSFileSource(const char *file)
 	m_rtp_clock = 0;
 	m_rtcp_clock = 0;
 
-	unsigned int ssrc = (unsigned int)rtp_ssrc();
+	uint32_t ssrc = rtp_ssrc();
 
 	struct ps_muxer_func_t func;
 	func.alloc = Alloc;
@@ -35,7 +33,7 @@ PSFileSource::PSFileSource(const char *file)
 
 	struct rtp_event_t event;
 	event.on_rtcp = OnRTCPEvent;
-	m_rtp = rtp_create(&event, this, ssrc, 90000, 4*1024);
+	m_rtp = rtp_create(&event, this, ssrc, ssrc, 90000, 4*1024, 1);
 	rtp_set_info(m_rtp, "RTSPServer", "szj.h264");
 }
 
@@ -59,7 +57,7 @@ int PSFileSource::Play()
 	m_status = 1;
 
 	time64_t clock = time64_now();
-	if(0 == m_rtp_clock || m_rtp_clock + 40 < clock)
+	if(0 == m_rtp_clock || m_rtp_clock + 40 < (clock - m_ps_clock))
 	{
 		size_t bytes;
 		const uint8_t* ptr;
@@ -168,12 +166,11 @@ void PSFileSource::Free(void* /*param*/, void* packet)
 	return free(packet);
 }
 
-void PSFileSource::Packet(void* param, int /*avtype*/, void* pes, size_t bytes)
+int PSFileSource::Packet(void* param, int /*avtype*/, void* pes, size_t bytes)
 {
 	PSFileSource* self = (PSFileSource*)param;
 	time64_t clock = time64_now();
-	rtp_payload_encode_input(self->m_pspacker, pes, bytes, clock * 90 /*kHz*/);
-	free(pes);
+	return rtp_payload_encode_input(self->m_pspacker, pes, bytes, clock * 90 /*kHz*/);
 }
 
 void* PSFileSource::RTPAlloc(void* param, int bytes)
@@ -189,12 +186,14 @@ void PSFileSource::RTPFree(void* param, void *packet)
 	assert(self->m_packet == packet);
 }
 
-void PSFileSource::RTPPacket(void* param, const void *packet, int bytes, uint32_t /*timestamp*/, int /*flags*/)
+int PSFileSource::RTPPacket(void* param, const void *packet, int bytes, uint32_t /*timestamp*/, int /*flags*/)
 {
 	PSFileSource *self = (PSFileSource*)param;
 	assert(self->m_packet == packet);
 
 	int r = self->m_transport->Send(false, packet, bytes);
-	assert(r == (int)bytes);
-	rtp_onsend(self->m_rtp, packet, bytes/*, time*/);
+	if (r != bytes)
+		return -1;
+	
+	return rtp_onsend(self->m_rtp, packet, bytes/*, time*/);
 }

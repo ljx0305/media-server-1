@@ -14,7 +14,7 @@ inline const char* ftimestamp(uint32_t t, char* buf)
 	return buf;
 }
 
-inline size_t get_adst_length(const uint8_t* data, size_t bytes)
+inline size_t get_adts_length(const uint8_t* data, size_t bytes)
 {
 	assert(bytes >= 6);
 	return ((data[3] & 0x03) << 11) | (data[4] << 3) | ((data[5] >> 5) & 0x07);
@@ -41,7 +41,7 @@ static int onFLV(void* /*param*/, int codec, const void* data, size_t bytes, uin
 	static uint32_t v_pts = 0, v_dts = 0;
 	static uint32_t a_pts = 0, a_dts = 0;
 
-	printf("[%c] pts: %s, dts: %s, ", flv_type(codec), ftimestamp(pts, s_pts), ftimestamp(dts, s_dts));
+	printf("[%c] pts: %s, dts: %s, %u, cts: %d, ", flv_type(codec), ftimestamp(pts, s_pts), ftimestamp(dts, s_dts), dts, (int)(pts - dts));
 	
 	if (FLV_AUDIO_AAC == codec)
 	{
@@ -49,12 +49,12 @@ static int onFLV(void* /*param*/, int codec, const void* data, size_t bytes, uin
 		a_pts = pts;
 		a_dts = dts;
 
-		assert(bytes == get_adst_length((const uint8_t*)data, bytes));
+		assert(bytes == get_adts_length((const uint8_t*)data, bytes));
 		fwrite(data, bytes, 1, aac);
 	}
 	else if (FLV_VIDEO_H264 == codec || FLV_VIDEO_H265 == codec)
 	{
-		printf("diff: %03d/%03d", (int)(pts - v_pts), (int)(dts - v_dts));
+		printf("diff: %03d/%03d %s", (int)(pts - v_pts), (int)(dts - v_dts), flags ? "[I]" : "");
 		v_pts = pts;
 		v_dts = dts;
 
@@ -67,6 +67,10 @@ static int onFLV(void* /*param*/, int codec, const void* data, size_t bytes, uin
 	else if (FLV_AUDIO_ASC == codec || FLV_VIDEO_AVCC == codec || FLV_VIDEO_HVCC == codec)
 	{
 		// nothing to do
+	}
+	else if ((3 << 4) == codec)
+	{
+		fwrite(data, bytes, 1, aac);
 	}
 	else
 	{
@@ -87,11 +91,12 @@ void flv_reader_test(const char* file)
 	void* reader = flv_reader_create(file);
 	flv_demuxer_t* flv = flv_demuxer_create(onFLV, NULL);
 
-	int type, r = 0;
+	int type, r;
+	size_t taglen;
 	uint32_t timestamp;
-	while ((r = flv_reader_read(reader, &type, &timestamp, packet, sizeof(packet))) > 0)
+	while (1 == flv_reader_read(reader, &type, &timestamp, &taglen, packet, sizeof(packet)))
 	{
-		r = flv_demuxer_input(flv, type, packet, r, timestamp);
+		r = flv_demuxer_input(flv, type, packet, taglen, timestamp);
 		if (r < 0)
 		{
 			assert(0);

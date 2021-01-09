@@ -27,7 +27,11 @@
 #include "media/ffmpeg-live-source.h"
 #endif
 
+#define UDP_MULTICAST_ADDR "239.0.0.2"
+#define UDP_MULTICAST_PORT 6000
+
 static const char* s_workdir = "e:\\";
+//static const char* s_workdir = "/Users/ireader/video/";
 
 static ThreadLocker s_locker;
 
@@ -101,7 +105,7 @@ static int rtsp_ondescribe(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri)
 		return -1;
 	}
 
-	char buffer[1024];
+	char buffer[1024] = { 0 };
 	{
 		AutoThreadLocker locker(s_locker);
 		it = s_describes.find(filename);
@@ -120,13 +124,18 @@ static int rtsp_ondescribe(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri)
 			}
 			else
 			{
-				//source.reset(new PSFileSource(filename.c_str()));
-				//source.reset(new H264FileSource(filename.c_str()));
+				if (strendswith(filename.c_str(), ".ps"))
+					source.reset(new PSFileSource(filename.c_str()));
+				else if (strendswith(filename.c_str(), ".h264"))
+					source.reset(new H264FileSource(filename.c_str()));
+				else
+				{
 #if defined(_HAVE_FFMPEG_)
-				source.reset(new FFFileSource(filename.c_str()));
+					source.reset(new FFFileSource(filename.c_str()));
 #else
-				source.reset(new MP4FileSource(filename.c_str()));
+					source.reset(new MP4FileSource(filename.c_str()));
 #endif
+				}
 				source->GetDuration(describe.duration);
 
 				int offset = snprintf(buffer, sizeof(buffer), pattern_vod, ntp64_now(), ntp64_now(), "0.0.0.0", uri, describe.duration / 1000.0);
@@ -206,13 +215,18 @@ static int rtsp_onsetup(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, con
 		}
 		else
 		{
-			//item.media.reset(new PSFileSource(filename.c_str()));
-			//item.media.reset(new H264FileSource(filename.c_str()));
+			if (strendswith(filename.c_str(), ".ps"))
+				item.media.reset(new PSFileSource(filename.c_str()));
+			else if (strendswith(filename.c_str(), ".h264"))
+				item.media.reset(new H264FileSource(filename.c_str()));
+			else
+			{
 #if defined(_HAVE_FFMPEG_)
-			item.media.reset(new FFFileSource(filename.c_str()));
+				item.media.reset(new FFFileSource(filename.c_str()));
 #else
-			item.media.reset(new MP4FileSource(filename.c_str()));
+				item.media.reset(new MP4FileSource(filename.c_str()));
 #endif
+			}
 		}
 
 		char rtspsession[32];
@@ -267,12 +281,42 @@ static int rtsp_onsetup(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, con
 	}
 	else if(transport->multicast)
 	{
+        unsigned short port[2] = { transport->rtp.u.client_port1, transport->rtp.u.client_port2 };
+        char multicast[SOCKET_ADDRLEN];
 		// RFC 2326 1.6 Overall Operation p12
-		// Multicast, client chooses address
-		// Multicast, server chooses address
-		assert(0);
-		// 461 Unsupported Transport
-		return rtsp_server_reply_setup(rtsp, 461, NULL, NULL);
+		
+		if(transport->destination[0])
+        {
+            // Multicast, client chooses address
+            snprintf(multicast, sizeof(multicast), "%s", transport->destination);
+            port[0] = transport->rtp.m.port1;
+            port[1] = transport->rtp.m.port2;
+        }
+        else
+        {
+            // Multicast, server chooses address
+            snprintf(multicast, sizeof(multicast), "%s", UDP_MULTICAST_ADDR);
+            port[0] = UDP_MULTICAST_PORT;
+            port[1] = UDP_MULTICAST_PORT + 1;
+        }
+        
+        item.transport = std::make_shared<RTPUdpTransport>();
+        if(0 != ((RTPUdpTransport*)item.transport.get())->Init(multicast, port))
+        {
+            // log
+
+            // 500 Internal Server Error
+            return rtsp_server_reply_setup(rtsp, 500, NULL, NULL);
+        }
+        item.media->SetTransport(path_basename(uri), item.transport);
+
+        // Transport: RTP/AVP;multicast;destination=224.2.0.1;port=3456-3457;ttl=16
+        snprintf(rtsp_transport, sizeof(rtsp_transport),
+            "RTP/AVP;multicast;destination=%s;port=%hu-%hu;ttl=%d",
+            multicast, port[0], port[1], 16);
+        
+        // 461 Unsupported Transport
+        //return rtsp_server_reply_setup(rtsp, 461, NULL, NULL);
 	}
 	else
 	{
@@ -336,7 +380,7 @@ static int rtsp_onplay(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, cons
 	if(scale && 0 != source->SetSpeed(*scale))
 	{
 		// set speed
-		assert(scale > 0);
+		assert(*scale > 0);
 
 		// 406 Not Acceptable
 		return rtsp_server_reply_play(rtsp, 406, NULL, NULL, NULL);
@@ -347,6 +391,11 @@ static int rtsp_onplay(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, cons
 	// 2. A mapping from RTP timestamps to NTP timestamps (wall clock) is available via RTCP.
 	char rtpinfo[512] = { 0 };
 	source->GetRTPInfo(uri, rtpinfo, sizeof(rtpinfo));
+
+	// for vlc 2.2.2
+	MP4FileSource* mp4 = dynamic_cast<MP4FileSource*>(source.get());
+	if(mp4)
+		mp4->SendRTCP(system_clock());
 
 	it->second.status = 1;
     return rtsp_server_reply_play(rtsp, 200, npt, NULL, rtpinfo);
@@ -405,6 +454,38 @@ static int rtsp_onteardown(void* /*ptr*/, rtsp_server_t* rtsp, const char* /*uri
 	return rtsp_server_reply_teardown(rtsp, 200);
 }
 
+static int rtsp_onannounce(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, const char* sdp)
+{
+    return rtsp_server_reply_announce(rtsp, 200);
+}
+
+static int rtsp_onrecord(void* /*ptr*/, rtsp_server_t* rtsp, const char* uri, const char* session, const int64_t *npt, const double *scale)
+{
+    return rtsp_server_reply_record(rtsp, 200, NULL, NULL);
+}
+
+static int rtsp_onoptions(void* ptr, rtsp_server_t* rtsp, const char* uri)
+{
+	const char* require = rtsp_server_get_header(rtsp, "Require");
+	return rtsp_server_reply_options(rtsp, 200);
+}
+
+static int rtsp_ongetparameter(void* ptr, rtsp_server_t* rtsp, const char* uri, const char* session, const void* content, int bytes)
+{
+	const char* ctype = rtsp_server_get_header(rtsp, "Content-Type");
+	const char* encoding = rtsp_server_get_header(rtsp, "Content-Encoding");
+	const char* language = rtsp_server_get_header(rtsp, "Content-Language");
+	return rtsp_server_reply_get_parameter(rtsp, 200, NULL, 0);
+}
+
+static int rtsp_onsetparameter(void* ptr, rtsp_server_t* rtsp, const char* uri, const char* session, const void* content, int bytes)
+{
+	const char* ctype = rtsp_server_get_header(rtsp, "Content-Type");
+	const char* encoding = rtsp_server_get_header(rtsp, "Content-Encoding");
+	const char* language = rtsp_server_get_header(rtsp, "Content-Language");
+	return rtsp_server_reply_set_parameter(rtsp, 200);
+}
+
 static int rtsp_onclose(void* /*ptr2*/)
 {
 	// TODO: notify rtsp connection lost
@@ -417,6 +498,7 @@ static int rtsp_onclose(void* /*ptr2*/)
 static void rtsp_onerror(void* /*param*/, rtsp_server_t* rtsp, int code)
 {
 	printf("rtsp_onerror code=%d, rtsp=%p\n", code, rtsp);
+    //return 0;
 }
 
 #define N_AIO_THREAD 4
@@ -432,10 +514,15 @@ extern "C" void rtsp_example()
     handler.base.onpause = rtsp_onpause;
     handler.base.onteardown = rtsp_onteardown;
 	handler.base.close = rtsp_onclose;
+    handler.base.onannounce = rtsp_onannounce;
+    handler.base.onrecord = rtsp_onrecord;
+	handler.base.onoptions = rtsp_onoptions;
+	handler.base.ongetparameter = rtsp_ongetparameter;
+	handler.base.onsetparameter = rtsp_onsetparameter;
 //	handler.base.send; // ignore
 	handler.onerror = rtsp_onerror;
     
-	void* tcp = rtsp_server_listen(NULL, 554, &handler, NULL); assert(tcp);
+	void* tcp = rtsp_server_listen(NULL, 8554, &handler, NULL); assert(tcp);
 //	void* udp = rtsp_transport_udp_create(NULL, 554, &handler, NULL); assert(udp);
 
 	// test only

@@ -14,7 +14,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "cpm/shared_ptr.h"
-#include <string.h>
+#include <string>
 #include <list>
 #include <map>
 
@@ -106,7 +106,7 @@ private:
                 assert(0);
             }
         }
-        return r;
+        return 0; // ignore error
     }
 };
 

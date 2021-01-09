@@ -6,6 +6,8 @@
 
 #define TS_PACKET_SIZE		188
 
+#define TS_SYNC_BYTE        0x47
+
 struct ts_adaptation_field_t
 {
 	unsigned int adaptation_field_length : 8;
@@ -64,9 +66,12 @@ struct pmt_t
 	unsigned int PCR_PID;	// 13-bits
 	unsigned int pminfo_len;// program_info_length : 12
 	uint8_t* pminfo;	// program_info;
+    
+    char provider[64];
+    char name[64];
 
 	unsigned int stream_count;
-	struct pes_t streams[16];
+	struct pes_t streams[4];
 };
 
 struct pat_t
@@ -76,24 +81,27 @@ struct pat_t
 	unsigned int cc;	//continuity_counter : 4;
 
 	unsigned int pmt_count;
-	struct pmt_t pmts[4];
+	unsigned int pmt_capacity;
+	struct pmt_t pmt_default[1];
+	struct pmt_t* pmts;
 };
 
-// Table 2-3 ¨C PID table(p36)
+// Table 2-3 - PID table(p36)
 enum ETS_PID
 {
 	TS_PID_PAT	= 0x00, // program association table
 	TS_PID_CAT	= 0x01, // conditional access table
-	TS_PID_SDT	= 0x02, // transport stream description table
+	TS_PID_TSDT	= 0x02, // transport stream description table
 	TS_PID_IPMP	= 0x03, // IPMP control information table
 	// 0x0004-0x000F Reserved
 	// 0x0010-0x1FFE May be assigned as network_PID, Program_map_PID, elementary_PID, or for other purposes
+    TS_PID_SDT  = 0x11, // https://en.wikipedia.org/wiki/Service_Description_Table / https://en.wikipedia.org/wiki/MPEG_transport_stream
 	TS_PID_USER	= 0x0042,
 	TS_PID_NULL	= 0x1FFF, // Null packet
 };
 
 // 2.4.4.4 Table_id assignments
-// Table 2-31 ¨C table_id assignment values(p66/p39)
+// Table 2-31 - table_id assignment values(p66/p39)
 enum EPAT_TID
 {
 	PAT_TID_PAS				= 0x00, // program_association_section
@@ -106,12 +114,13 @@ enum EPAT_TID
 	PAT_TID_IPMP			= 0x07, // IPMP_Control_Information_section(defined in ISO/IEC 13818-11)
 	PAT_TID_H222			= 0x08, // Rec. ITU-T H.222.0 | ISO/IEC 13818-1 reserved
 	PAT_TID_USER			= 0x40,	// User private
+    PAT_TID_SDT             = 0x42, // service_description_section 
 	PAT_TID_Forbidden		= 0xFF,
 };
 
 // ISO/IEC 13818-1:2015 (E)
 // 2.4.4.9 Semantic definition of fields in transport stream program map section
-// Table 2-34 ¨C Stream type assignments(p69)
+// Table 2-34 - Stream type assignments(p69)
 enum EPSI_STREAM_TYPE
 {
 	PSI_STREAM_RESERVED			= 0x00, // ITU-T | ISO/IEC Reserved
@@ -153,20 +162,25 @@ enum EPSI_STREAM_TYPE
 	PSI_STREAM_H265				= 0x24, // Rec. ITU-T H.265 | ISO/IEC 23008-2 video stream or an HEVC temporal video sub-bitstream
 	PSI_STREAM_H265_subset		= 0x25, // HEVC temporal video subset of an HEVC video stream conforming to one or more profiles defined in Annex A of Rec. ITU-T H.265 | ISO/IEC 23008-2
 	PSI_STREAM_H264_MVCD		= 0x26, // MVCD video sub-bitstream of an AVC video stream conforming to one or more profiles defined in Annex I of Rec. ITU-T H.264 | ISO/IEC 14496-10
+	PSI_STREAM_VP8				= 0x9d,
+	PSI_STREAM_VP9				= 0x9e,
 	// 0x27-0x7E Rec. ITU-T H.222.0 | ISO/IEC 13818-1 Reserved
 	PSI_STREAM_IPMP				= 0x7F, // IPMP stream
 	// 0x80-0xFF User Private
 	PSI_STREAM_VIDEO_CAVS		= 0x42, // ffmpeg/libavformat/mpegts.h
 	PSI_STREAM_AUDIO_AC3		= 0x81, // ffmpeg/libavformat/mpegts.h
+    PSI_STREAM_AUDIO_EAC3       = 0x87, // ffmpeg/libavformat/mpegts.h
 	PSI_STREAM_AUDIO_DTS		= 0x8a, // ffmpeg/libavformat/mpegts.h
 	PSI_STREAM_VIDEO_DIRAC		= 0xd1, // ffmpeg/libavformat/mpegts.h
 	PSI_STREAM_VIDEO_VC1		= 0xea, // ffmpeg/libavformat/mpegts.h
 	PSI_STREAM_VIDEO_SVAC		= 0x80, // GBT 25724-2010 SVAC(2014)
 	PSI_STREAM_AUDIO_SVAC		= 0x9B, // GBT 25724-2010 SVAC(2014)
-	PSI_STREAM_AUDIO_G711		= 0x90,
+	PSI_STREAM_AUDIO_G711A		= 0x90,	// GBT 25724-2010 SVAC(2014)
+    PSI_STREAM_AUDIO_G711U      = 0x91,
 	PSI_STREAM_AUDIO_G722		= 0x92,
 	PSI_STREAM_AUDIO_G723		= 0x93,
 	PSI_STREAM_AUDIO_G729		= 0x99,
+	PSI_STREAM_AUDIO_OPUS		= 0x9c,
 };
 
 enum
@@ -175,9 +189,12 @@ enum
     MPEG_FLAG_H264_H265_WITH_AUD = 0x8000,
 };
 
+struct pmt_t* pat_alloc_pmt(struct pat_t* pat);
+struct pmt_t* pat_find(struct pat_t* pat, uint16_t pn);
 size_t pat_read(struct pat_t *pat, const uint8_t* data, size_t bytes);
 size_t pat_write(const struct pat_t *pat, uint8_t *data);
 size_t pmt_read(struct pmt_t *pmt, const uint8_t* data, size_t bytes);
 size_t pmt_write(const struct pmt_t *pmt, uint8_t *data);
+size_t sdt_read(struct pat_t *pat, const uint8_t* data, size_t bytes);
 
 #endif /* !_mpeg_ts_proto_h_ */

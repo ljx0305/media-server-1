@@ -1,17 +1,73 @@
 // ITU-T H.222.0(10/2014)
-// Information technology ¨C Generic coding of moving pictures and associated audio information: Systems
+// Information technology - Generic coding of moving pictures and associated audio information: Systems
 // 2.4.4.3 Program association table(p65)
 
 #include "mpeg-ts-proto.h"
 #include "mpeg-util.h"
+#include <stdlib.h>
+#include <string.h>
 #include <assert.h>
+
+struct pmt_t* pat_alloc_pmt(struct pat_t* pat)
+{
+	void* ptr;
+	unsigned int n;
+
+	if (NULL == pat->pmts)
+	{
+		assert(0 == pat->pmt_count);
+		assert(0 == pat->pmt_capacity);
+		pat->pmts = pat->pmt_default;
+		pat->pmt_capacity = sizeof(pat->pmt_default) / sizeof(pat->pmt_default[0]);
+	}
+
+	if (pat->pmt_count >= pat->pmt_capacity)
+	{
+		if (pat->pmt_count + 1 > 65535)
+		{
+			assert(0);
+			return NULL;
+		}
+
+		n = pat->pmt_capacity + pat->pmt_capacity / 4 + 4;
+		ptr = realloc(pat->pmts == pat->pmt_default ? NULL : pat->pmts, sizeof(pat->pmts[0]) * n);
+		if (!ptr)
+			return NULL;
+
+		if (pat->pmts == pat->pmt_default)
+			memmove(ptr, pat->pmts, sizeof(pat->pmt_default));
+		pat->pmts = (struct pmt_t*)ptr;
+		pat->pmt_capacity = n;
+	}
+
+	// new pmt
+	memset(&pat->pmts[pat->pmt_count], 0, sizeof(pat->pmts[0]));
+	return &pat->pmts[pat->pmt_count];
+}
+
+static struct pmt_t* pat_fetch(struct pat_t* pat, uint16_t pid)
+{
+	unsigned int i;
+	struct pmt_t* pmt;
+	for(i = 0; i < pat->pmt_count; i++)
+    {
+        if(pat->pmts[i].pid == pid)
+            return &pat->pmts[i];
+    }
+	
+    // new pmt
+	pmt = pat_alloc_pmt(pat);
+	pat->pmt_count++;
+	return pmt;
+}
 
 size_t pat_read(struct pat_t *pat, const uint8_t* data, size_t bytes)
 {
-	// Table 2-30 ¨C Program association section(p65)
+	// Table 2-30 Program association section(p65)
 
+    struct pmt_t* pmt;
 	uint32_t i = 0;
-	uint32_t j = 0;
+    uint16_t pn, pid;
 //	uint32_t crc = 0;
 
 	uint32_t table_id = data[0];
@@ -30,31 +86,39 @@ size_t pat_read(struct pat_t *pat, const uint8_t* data, size_t bytes)
 
 	assert(PAT_TID_PAS == table_id);
 	assert(1 == section_syntax_indicator);
+    if(pat->ver != version_number)
+        pat->pmt_count = 0; // clear all pmts
 	pat->tsid = transport_stream_id;
 	pat->ver = version_number;
 
     // TODO: version_number change, reload pmts
 	assert(bytes >= section_length + 3); // PAT = section_length + 3
-	for(i = 8; i < section_length + 8 - 5 - 4 && j < sizeof(pat->pmts)/sizeof(pat->pmts[0]); i += 4) // 4:CRC, 5:follow section_length item
+	for(i = 8; i + 4 <= section_length + 8 - 5 - 4; i += 4) // 4:CRC, 5:follow section_length item
 	{
-		pat->pmts[j].pn = (data[i] << 8) | data[i+1];
-		pat->pmts[j].pid = ((data[i+2] & 0x1F) << 8) | data[i+3];
-//		printf("PAT[%d]: pn: %0x, pid: %0x\n", j, pat->pmt[j].pn, pat->pmt[j].pid);
-		j++;
+        pn = (data[i] << 8) | data[i+1];
+        pid = ((data[i+2] & 0x1F) << 8) | data[i+3];
+//        printf("PAT: pn: %0x, pid: %0x\n", (unsigned int)pn, (unsigned int)pid);
+        
+        if(0 == pn)
+            continue; // ignore NIT info
+        pmt = pat_fetch(pat, pid);
+        if(NULL == pmt)
+            continue;
+        
+        pmt->pn = pn;
+		pmt->pid = pid;
 	}
-
-	pat->pmt_count = j;
 
 	//assert(i+4 == bytes);
 	//crc = (data[i] << 24) | (data[i+1] << 16) | (data[i+2] << 8) | data[i+3];
 	//crc = mpeg_crc32(-1, data, bytes-4);
-	assert(0 == mpeg_crc32(0xffffffff, data, section_length+3));
+//	assert(0 == mpeg_crc32(0xffffffff, data, section_length+3));
 	return 0;
 }
 
 size_t pat_write(const struct pat_t *pat, uint8_t *data)
 {
-	// Table 2-30 ¨C Program association section(p65)
+	// Table 2-30 Program association section(p65)
 
 	uint32_t i = 0;
 	uint32_t len = 0;
@@ -100,4 +164,15 @@ size_t pat_write(const struct pat_t *pat, uint8_t *data)
 	data[len - 1 + 0] = crc & 0xFF;
 
 	return len + 3; // total length
+}
+
+struct pmt_t* pat_find(struct pat_t* pat, uint16_t pn)
+{
+    unsigned int i;
+    for(i = 0; i < pat->pmt_count; i++)
+    {
+        if(pat->pmts[i].pn == pn)
+            return &pat->pmts[i];
+    }
+    return NULL;
 }

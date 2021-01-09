@@ -1,8 +1,10 @@
 #ifndef _sip_header_h_
 #define _sip_header_h_
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
@@ -12,12 +14,6 @@
 #if defined(__cplusplus)
 extern "C" {
 #endif
-
-	// 19.1.1 SIP and SIPS URI Components (p152)
-	// The default port value is transport and scheme dependent. The
-	// default is 5060 for sip: using UDP, TCP, or SCTP. The default is
-	// 5061 for sip: using TLS over TCP and sips: over TCP.
-#define SIP_PORT 5060
 
 // 10.2.6 Discovering a Registrar (p62)
 #define SIP_MULTICAST_HOST "sip.mcast.net"
@@ -66,7 +62,7 @@ extern "C" {
 											\
 	int name##s_push(struct name##s_t* p, struct name##_t* item)	\
 	{										\
-		return darray_push_back(&p->arr, item, 1);	\
+		return darray_insert(&p->arr, -1, item);	\
 	}										\
 											\
 	struct name##_t* name##s_get(const struct name##s_t* p, int index)	\
@@ -95,10 +91,11 @@ struct sip_uri_t
 	struct sip_params_t parameters;
 	struct cstring_t transport; // udp/tcp/sctp/tls/other
 	struct cstring_t method;
-	struct cstring_t maddr;
+	struct cstring_t maddr; // the server address to be contacted for this user, overriding any address derived from the host field
 	struct cstring_t user; // phone/ip
 	int ttl;
 	int lr;
+	int rport; // 0-not found, -1-no-value, other-value
 
 	struct sip_params_t headers;
 };
@@ -143,7 +140,8 @@ struct sip_via_t
 	struct cstring_t maddr; // host
 	struct cstring_t received; // IPv4address / IPv6address
 	int ttl; // 0-255
-	struct sip_params_t params; // include branch/maddr/received/ttl
+	int rport; // 0-not found, -1-no-value, other-value
+	struct sip_params_t params; // include branch/maddr/received/ttl/rport
 };
 DARRAY_DECLARE(sip_via);
 
@@ -151,6 +149,17 @@ struct sip_cseq_t
 {
 	uint32_t id;
 	struct cstring_t method;
+};
+
+struct sip_substate_t
+{
+	struct cstring_t state;
+
+	// parameters
+	struct cstring_t reason;
+	uint32_t expires; // expires
+	uint32_t retry; // retry-after
+	struct sip_params_t params; // include reason/expires/retry
 };
 
 int sip_header_param(const char* s, const char* end, struct sip_param_t* param);
@@ -162,6 +171,7 @@ const struct cstring_t* sip_params_find_string(const struct sip_params_t* params
 int sip_params_find_int(const struct sip_params_t* params, const char* name, int bytes, int* value);
 int sip_params_find_int64(const struct sip_params_t* params, const char* name, int bytes, int64_t* value);
 int sip_params_find_double(const struct sip_params_t* params, const char* name, int bytes, double* value);
+int sip_params_add_or_update(struct sip_params_t* params, const char* name, int bytes, const struct cstring_t* value);
 
 /// @return 0-ok, other-error
 int sip_header_cseq(const char* s, const char* end, struct sip_cseq_t* cseq);
@@ -172,6 +182,7 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri);
 int sip_uri_write(const struct sip_uri_t* uri, char* data, const char* end);
 int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r);
 int sip_uri_username(const struct sip_uri_t* uri, struct cstring_t* user);
+int sip_request_uri_write(const struct sip_uri_t* uri, char* data, const char* end);
 
 int sip_header_via(const char* s, const char* end, struct sip_via_t* via);
 int sip_header_vias(const char* s, const char* end, struct sip_vias_t* vias);
@@ -183,14 +194,19 @@ int sip_header_contacts(const char* s, const char* end, struct sip_contacts_t* c
 int sip_contact_write(const struct sip_contact_t* contact, char* data, const char* end);
 int sip_contacts_match_any(const struct sip_contacts_t* contacts);
 
-uint8_t* cstring_clone(uint8_t* ptr, const uint8_t* end, struct cstring_t* clone, const char* s, size_t n);
-uint8_t* sip_uri_clone(uint8_t* ptr, const uint8_t* end, struct sip_uri_t* clone, const struct sip_uri_t* uri);
-uint8_t* sip_via_clone(uint8_t* ptr, const uint8_t* end, struct sip_via_t* clone, const struct sip_via_t* via);
-uint8_t* sip_contact_clone(uint8_t* ptr, const uint8_t* end, struct sip_contact_t* clone, const struct sip_contact_t* contact);
+char* cstring_clone(char* ptr, const char* end, struct cstring_t* clone, const char* s, size_t n);
+char* sip_uri_clone(char* ptr, const char* end, struct sip_uri_t* clone, const struct sip_uri_t* uri);
+char* sip_via_clone(char* ptr, const char* end, struct sip_via_t* clone, const struct sip_via_t* via);
+char* sip_contact_clone(char* ptr, const char* end, struct sip_contact_t* clone, const struct sip_contact_t* contact);
 
 void sip_uri_params_free(struct sip_uri_t* uri);
 void sip_via_params_free(struct sip_via_t* via);
 void sip_contact_params_free(struct sip_contact_t* contact);
+
+/// @return 0-ok, other-error
+int sip_header_substate(const char* s, const char* end, struct sip_substate_t* substate);
+/// @return write length, >0-ok, <0-error
+int sip_substate_write(const struct sip_substate_t* substate, char* data, const char* end);
 
 #if defined(__cplusplus)
 }
